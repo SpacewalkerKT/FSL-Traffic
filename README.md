@@ -1,7 +1,7 @@
 
 # FSL-Traffic
 
-本项目基于 **TimeSeriesEncoder + 原型网络（Prototypical Network）** 实现小样本交通流异常检测。
+本项目目前基于 **TimeSeriesEncoder + 原型网络（Prototypical Network）** 实现小样本交通流异常检测
 
 ---
 
@@ -44,9 +44,9 @@ python main.py
 
 | 版本 | 特征提取器 | 精度 | 备注 |
 |------|------------|------|------|
-| v0.0 | TimeSeriesEncoder + ProtoNet | 93.5% | 初始实现 |
+| v0.0 | TimeSeriesEncoder + ProtoNet | 93.5% | 初始代码实现 |
 | v1.0 | 加入梯度裁剪+warmup预热 | 96.55% | 稳定性大幅提升 |
-| v2.0 |  |  |  |
+| v2.0 | 加入早停法 |  |  |
 
 ---
 
@@ -60,7 +60,7 @@ python main.py
 
 ##  后续工程
 
-- [ ] 
 - [ ] 对比不同 few-shot 架构模型（如 MAML, GNN）
+- [ ] 使用**迁移学习**策略优化模型
 
 ---
