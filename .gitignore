@@ -1,0 +1,23 @@
+
+# 模型参数文件（防止提交过大文件）
+*.pth
+*.ckpt
+*.pt
+
+# 日志文件
+*.log
+logs/
+
+# Python 缓存文件
+__pycache__/
+*.pyc
+
+# Jupyter 缓存
+.ipynb_checkpoints/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 环境配置文件（可选忽略）
+.env
