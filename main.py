@@ -240,133 +240,133 @@ class PrototypicalNetwork(nn.Module):
 
 # =============== 训练与评估 ===============
 # 加入梯度裁剪和线性学习率预热(warmup)策略
-def train_prototypical_network(model, train_loader, val_loader, epochs=50, lr=0.001, warmup_steps=1000, grad_clip_norm=1.0):
+def train_prototypical_network(model, train_loader, val_loader,
+                               epochs=50, lr=0.001,
+                               warmup_steps=1000, grad_clip_norm=1.0,
+                               early_stopping_patience=10, min_delta=0):
     """
-    训练原型网络模型
-
+    训练原型网络模型 (包含学习率预热、梯度裁剪和早停法)
     Args:
         model: 要训练的模型
         train_loader: 训练数据加载器
         val_loader: 验证数据加载器
-        epochs: 训练轮数
-        lr: 初始学习率 (预热结束后的目标学习率),可以从 0.0005 或 0.0001 开始尝试
-            使用 warmup 时，通常可以将初始学习率 lr 设置得稍大一些（或者保持原来的值，因为 warmup 会平稳地达到它）
-        warmup_steps: 学习率线性预热的步数,通常设置为总训练步数的一小部分
-                      例如前 500-2000 步
-                      你的每个 epoch 有 2000 步 (len(train_loader) = 8000 / 4 = 2000)
-                      所以 1000 步大约是半个 epoch。
-        grad_clip_norm: 梯度裁剪的最大范数,1.0 是常用值
-                        但有时可能需要调整（例如 0.5 或 5.0）
-                        设为 0 或负数可以禁用它
+        epochs: 最大训练轮数
+        lr: 初始学习率 (预热结束后的目标学习率)
+        warmup_steps: 学习率线性预热的步数
+        grad_clip_norm: 梯度裁剪的最大范数
+        early_stopping_patience: 早停法耐心值 (多少个 epoch 验证损失没有改善则停止)
+        min_delta: 被视为验证损失改善的最小变化量
     """
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr) # 使用初始LR初始化优化器
-    # 学习率调度器，在预热结束后生效
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5
+        optimizer, mode='min', factor=0.5, patience=5 # 这个 patience 是降低学习率的耐心
     )
 
-    best_acc = 0.0
-    best_model_state = None
-    global_step = 0 # 用于跟踪总的优化器步数，配合warmup
+    # 早停法相关变量初始化
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    best_model_state = None # 用于存储最佳模型的状态字典
+
+    global_step = 0
 
     print(f"--- 开始训练 ---")
     print(f"初始学习率 (Initial LR): {lr}")
     print(f"预热步数 (Warmup Steps): {warmup_steps}")
     print(f"梯度裁剪范数 (Grad Clip Norm): {grad_clip_norm}")
+    print(f"早停耐心值 (Early Stopping Patience): {early_stopping_patience}")
+    print(f"最小改善阈值 (Min Delta): {min_delta}")
     print(f"设备 (Device): {device}")
     print("-" * 20)
 
+    stopped_early = False # 标记是否因为早停而结束
     for epoch in range(epochs):
         # 训练
         model.train()
         train_loss = 0.0
         train_acc = 0.0
-
-        # 使用 tqdm 显示进度，并在描述中加入 Epoch 信息
         pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs} [训练]", unit="batch")
         for batch in pbar:
-            global_step += 1 # 更新全局步数
+            global_step += 1
             support_x, support_y, query_x, query_y = [x.to(device) for x in batch]
 
             # --- 学习率预热逻辑 ---
-            current_lr = lr # 默认使用初始学习率
+            current_lr = lr
             if global_step < warmup_steps:
-                # 计算线性增加的学习率
                 lr_scale = float(global_step) / float(warmup_steps)
                 current_lr = lr * lr_scale
-                # 应用 warmup 学习率到优化器
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = current_lr
             # ----------------------
 
-            # 前向传播
             logits = model(support_x, support_y, query_x)
-
-            # 调整 query_y 的形状以匹配 logits
             query_y = query_y.view(-1)
-
-            # 计算损失
             loss = F.cross_entropy(logits, query_y)
 
-            # 反向传播
             optimizer.zero_grad()
             loss.backward()
 
             # --- 梯度裁剪 ---
-            if grad_clip_norm > 0: # 允许设置为0或负数来禁用裁剪
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm) # 限制梯度的最大范数，防止梯度爆炸
+            if grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
             # -----------------
 
-            # 更新权重
             optimizer.step()
 
-            # 计算准确率
             _, preds = torch.max(logits, 1)
             acc = (preds == query_y).float().mean().item()
-
             train_loss += loss.item()
             train_acc += acc
-
-            # 更新进度条显示信息，加入当前学习率
             pbar.set_postfix({'loss': loss.item(), 'acc': acc, 'lr': current_lr})
 
         train_loss /= len(train_loader)
         train_acc /= len(train_loader)
 
-        # 验证 (调用你之前的 evaluate_prototypical_network 函数)
+        # 验证
         val_loss, val_acc = evaluate_prototypical_network(model, val_loader, device)
 
         # --- 学习率调度器更新 ---
-        # 注意：只有在 warmup 结束后，ReduceLROnPlateau 才应该根据 val_loss 调整学习率
-        # ReduceLROnPlateau 本身会处理好基于当前 optimizer 中的 lr 进行调整
         lr_scheduler.step(val_loss)
-        # 获取调度器调整后的实际学习率 (如果没调整，则保持不变)
         actual_lr_after_schedule = optimizer.param_groups[0]['lr']
         #-------------------------
 
         print(f"Epoch {epoch + 1}/{epochs} 结束 - Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
-              f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Current LR (End of Epoch): {actual_lr_after_schedule:.6f}")
+              f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Current LR: {actual_lr_after_schedule:.6f}")
 
-        # 保存最佳模型 (基于验证准确率)
-        if val_acc > best_acc:
-            best_acc = val_acc
-            best_model_state = model.state_dict().copy()
-            print(f"*** 找到新的最佳模型 (Val Acc: {best_acc:.4f}), 已暂存 ***")
-
+        # --- 早停法逻辑 ---
+        if val_loss < best_val_loss - min_delta:
+            # 找到了更好的模型 (基于验证损失)
+            best_val_loss = val_loss
+            epochs_no_improve = 0
+            best_model_state = model.state_dict().copy() # 保存最佳模型状态
+            print(f"*** 验证损失改善，新的最佳损失: {best_val_loss:.4f}, 已暂存模型 ***")
+        else:
+            # 验证损失没有改善
+            epochs_no_improve += 1
+            print(f"验证损失未改善或改善小于 {min_delta}，连续未改善 epoch 数: {epochs_no_improve}/{early_stopping_patience}")
+            if epochs_no_improve >= early_stopping_patience:
+                print(f"--- 早停触发！连续 {early_stopping_patience} 个 Epoch 验证损失未改善 ---")
+                stopped_early = True
+                break # 中断训练循环
+        # -----------------
 
     print(f"--- 训练结束 ---")
-    print(f"最高验证准确率 (Best Val Acc): {best_acc:.4f}")
+    if stopped_early:
+        print(f"训练因早停而在 Epoch {epoch + 1} 结束。")
+    else:
+        print(f"训练完成所有 {epochs} 个 Epoch。")
 
-    # 加载最佳模型
+    print(f"最低验证损失 (Best Val Loss): {best_val_loss:.4f}")
+
+    # 加载最佳模型 (对应最低验证损失)
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
-        print("已加载最佳模型权重。")
+        print("已加载最佳模型权重 (基于最低验证损失)。")
     else:
         print("警告：未能找到最佳模型状态，模型保持训练结束时的状态。")
-
 
     return model
 
@@ -412,42 +412,43 @@ def main():
     dataset = FewShotDataset(features, labels, seq_len=24)
 
     # 分割训练集和验证集
-    # 注意：由于数据集 __len__ 返回固定值，这里的分割比例可能不精确反映实际任务数
-    # 但对于随机抽样来说是可行的
-    train_size = int(0.8 * len(dataset)) # 这里的 len(dataset) 是 10000
+    torch.manual_seed(42) # 为了可复现性
+    train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
-    # 为了确保每次运行的可复现性，可以设置一个随机种子
-    torch.manual_seed(42)
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
 
     # 创建数据加载器
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=0) # 调整 num_workers 适应你的环境
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=4, num_workers=0)
 
     # 创建模型
     feature_dim = features.shape[1]
-    encoder = TimeSeriesEncoder(feature_dim, hidden_dim=128, num_layers=4, nhead=8, dropout=0.1) # 可以尝试调整 dropout
+    encoder = TimeSeriesEncoder(feature_dim, hidden_dim=128, num_layers=4, nhead=8, dropout=0.1)
     model = PrototypicalNetwork(encoder)
 
-    # 训练模型 (使用修改后的函数)
-    initial_learning_rate = 0.0005 # 考虑使用稍小一点的学习率配合 warmup
-    warmup_steps_count = 1000 # 大约半个 epoch 的步数
-    gradient_clip_value = 1.0 # 常用的梯度裁剪值
+    # 训练模型 (调用包含早停的版本)
+    initial_learning_rate = 0.0005
+    warmup_steps_count = 1000
+    gradient_clip_value = 1.0
+    early_stopping_patience_value = 10 # 设置一个合适的耐心值。如果你的验证损失波动较大，可以设置得更大一些 (如 15 或 20)；
+                                       # 如果希望更快停止，可以设小一些 (如 5 或 7)。10 是一个常用的起始值。
+    min_delta_value = 1e-5             # 通常设为 0 或一个非常小的值 (如 1e-4, 1e-5)。设为 0 表示任何微小的损失下降都算作改善。
 
     trained_model = train_prototypical_network(
         model,
         train_loader,
         val_loader,
-        epochs=50,
+        epochs=50, # 最大 epoch 数
         lr=initial_learning_rate,
         warmup_steps=warmup_steps_count,
-        grad_clip_norm=gradient_clip_value
+        grad_clip_norm=gradient_clip_value,
+        early_stopping_patience=early_stopping_patience_value,
+        min_delta=min_delta_value
     )
 
-    # 保存模型
-    torch.save(trained_model.state_dict(), "traffic_prototypical_network_v1.pth")
-    print("模型已保存为: traffic_prototypical_network_v1.pth")
-
+    # 保存模型 (保存的是验证损失最低时的模型)
+    torch.save(trained_model.state_dict(), "traffic_prototypical_network_v3.pth")
+    print("模型已保存为: traffic_prototypical_network_v3.pth")
 
 if __name__ == "__main__":
     try:
