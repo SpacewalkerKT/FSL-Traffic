@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+import time
 from tqdm import tqdm
 
 
@@ -402,9 +404,52 @@ def evaluate_prototypical_network(model, data_loader, device):
     return val_loss, val_acc
 
 
+# =============== 评估函数 ===============
+
+def evaluate_model_metrics(model, data_loader, device):
+    """全面评估模型性能并返回详细指标"""
+    model.eval()
+
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for batch in tqdm(data_loader, desc="评估模型", unit="batch"):
+            support_x, support_y, query_x, query_y = [x.to(device) for x in batch]
+
+            # 前向传播
+            logits = model(support_x, support_y, query_x)
+
+            # 获取预测结果
+            query_y = query_y.view(-1)
+            _, preds = torch.max(logits, 1)
+
+            # 收集预测和真实标签
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(query_y.cpu().numpy())
+
+    # 计算各项指标
+    accuracy = accuracy_score(all_labels, all_preds)
+    precision = precision_score(all_labels, all_preds, average='binary')
+    recall = recall_score(all_labels, all_preds, average='binary')
+    f1 = f1_score(all_labels, all_preds, average='binary')
+    conf_matrix = confusion_matrix(all_labels, all_preds)
+
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1,
+        'confusion_matrix': conf_matrix
+    }
+
+
 # =============== 主函数 ===============
 
 def main():
+    # 记录开始时间
+    start_time = time.time()
+
     # 加载和预处理数据
     features, labels, feature_cols = load_and_preprocess_data()
 
@@ -430,7 +475,7 @@ def main():
     initial_learning_rate = 0.0005
     warmup_steps_count = 1000
     gradient_clip_value = 1.0
-    early_stopping_patience_value = 10 # 设置一个合适的耐心值。如果你的验证损失波动较大，可以设置得更大一些 (如 15 或 20)；
+    early_stopping_patience_value = 5 # 设置一个合适的耐心值。如果你的验证损失波动较大，可以设置得更大一些 (如 15 或 20)；
                                        # 如果希望更快停止，可以设小一些 (如 5 或 7)。10 是一个常用的起始值。
     min_delta_value = 1e-5             # 通常设为 0 或一个非常小的值 (如 1e-4, 1e-5)。设为 0 表示任何微小的损失下降都算作改善。
 
@@ -447,8 +492,29 @@ def main():
     )
 
     # 保存模型 (保存的是验证损失最低时的模型)
-    torch.save(trained_model.state_dict(), "traffic_prototypical_network_v3.pth")
-    print("模型已保存为: traffic_prototypical_network_v3.pth")
+    torch.save(trained_model.state_dict(), "traffic_prototypical_network_v2.1.pth")
+    print("模型已保存为: traffic_prototypical_network_v2.1.pth")
+
+    # 在最终测试集上评估模型性能
+    print("\n=== 最终模型性能评估 ===")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    metrics = evaluate_model_metrics(trained_model, val_loader, device)
+
+    # 输出评估指标
+    print(f"准确率 (Accuracy): {metrics['accuracy']:.4f}")
+    print(f"精确率 (Precision): {metrics['precision']:.4f}")
+    print(f"召回率 (Recall): {metrics['recall']:.4f}")
+    print(f"F1值 (F1 Score): {metrics['f1_score']:.4f}")
+    print(f"混淆矩阵 (Confusion Matrix):\n{metrics['confusion_matrix']}")
+
+    # 计算并输出总运行时间
+    end_time = time.time()
+    total_time = end_time - start_time
+    hours, remainder = divmod(total_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    print(f"\n=== 程序执行完成 ===")
+    print(f"总运行时间: {int(hours)}小时 {int(minutes)}分钟 {seconds:.2f}秒")
 
 if __name__ == "__main__":
     try:
@@ -457,4 +523,3 @@ if __name__ == "__main__":
         print("错误：请确保 'data/incident.xlsx', 'data/common_before.xlsx', 'data/common_after.xlsx' 文件存在于正确路径。")
     except Exception as e:
         print(f"发生错误: {e}")
-    main()
